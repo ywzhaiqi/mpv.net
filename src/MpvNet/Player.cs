@@ -471,6 +471,8 @@ public class MainPlayer : MpvClient
 
     public static string ConvertFilePath(string path)
     {
+        path = ConvertProtocolPath(path);
+
         if ((path.Contains(":/") && !path.Contains("://")) || (path.Contains(":\\") && path.Contains('/')))
             path = path.Replace("/", "\\");
 
@@ -478,6 +480,33 @@ public class MainPlayer : MpvClient
             path = System.IO.Path.GetFullPath(path);
 
         return path;
+    }
+
+    static string ConvertProtocolPath(string path)
+    {
+        const string mpvProtocolPrefix = "mpv://";
+
+        if (!path.StartsWith(mpvProtocolPrefix, StringComparison.OrdinalIgnoreCase))
+            return path;
+
+        string target = Uri.UnescapeDataString(path[mpvProtocolPrefix.Length..]);
+
+        if (target.StartsWith('/') &&
+            (LooksLikeUri(target[1..]) || LooksLikeWindowsPath(target[1..])))
+        {
+            target = target[1..];
+        }
+
+        return target;
+
+        static bool LooksLikeUri(string value) =>
+            Uri.TryCreate(value, UriKind.Absolute, out Uri? uri) && uri.Scheme != "mpv";
+
+        static bool LooksLikeWindowsPath(string value) =>
+            value.Length >= 3 &&
+            char.IsLetter(value[0]) &&
+            value[1] == ':' &&
+            (value[2] == '\\' || value[2] == '/');
     }
 
     public void LoadISO(string path)
