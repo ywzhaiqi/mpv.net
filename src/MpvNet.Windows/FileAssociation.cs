@@ -19,7 +19,8 @@ public static class FileAssociation
         {
             foreach (string it in protocols)
             {
-                RegistryHelp.SetValue($@"HKCR\{it}", $"{it.ToUpper()} Protocol", "");
+                RegistryHelp.SetValue($@"HKCR\{it}", $"URL:{it} Protocol", "");
+                RegistryHelp.SetValue($@"HKCR\{it}", "URL Protocol", "");
                 RegistryHelp.SetValue($@"HKCR\{it}\shell\open\command", "", $"\"{exePath}\" \"%1\"");
             }
 
