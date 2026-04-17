@@ -1,4 +1,4 @@
-﻿
+
 namespace MpvNet.Windows.WinForms;
 
 partial class MainForm

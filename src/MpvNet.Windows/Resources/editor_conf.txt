@@ -1115,6 +1115,13 @@ default = yes
 option = yes
 option = no
 
+name = summary-host
+file = mpvnet
+directory = Playback
+width = 300
+help = Limit automatic summary loading to a single exact host. Empty disables the feature. Default: pan2.871015.xyz (mpv.net option)
+default = pan2.871015.xyz
+
 name = reset-on-next-file
 file = mpv
 directory = Program Behavior

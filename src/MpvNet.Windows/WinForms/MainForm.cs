@@ -1,4 +1,4 @@
-﻿
+
 using System.Drawing;
 using System.Globalization;
 using System.Runtime.InteropServices;
@@ -13,6 +13,7 @@ using MpvNet.Help;
 using MpvNet.Extensions;
 using MpvNet.MVVM;
 using MpvNet.Windows.WPF.MsgBox;
+using MpvNet.Summary;
 
 using WpfControls = System.Windows.Controls;
 using CommunityToolkit.Mvvm.Messaging;
@@ -45,9 +46,22 @@ public partial class MainForm : Form
     bool _maxSizeSet;
     bool _isCursorVisible = true;
 
+    // 摘要侧边栏相关字段
+    System.Threading.CancellationTokenSource? _summaryCts;
+    readonly System.Net.Http.HttpClient _summaryHttpClient = new();
+    readonly VideoSummaryController _summaryController;
+    System.Windows.Forms.Form? _summaryPopup;
+    System.Windows.Forms.Panel? _summaryScrollPanel;
+    System.Windows.Forms.Panel? _summaryContentPanel;
+    sealed record SummaryTimestampMarker(int Start, int Length, int Seconds);
+    sealed record SummaryTimestampRange(int Start, int Length, int Seconds, System.Drawing.Rectangle Bounds);
+
     public MainForm()
     {
         InitializeComponent();
+
+        // 初始化摘要控制器
+        _summaryController = new VideoSummaryController(new VideoSummaryClient(_summaryHttpClient));
 
         UpdateDarkMode();
 
@@ -917,6 +931,446 @@ public partial class MainForm : Form
             while (App.Settings.RecentFiles.Count > App.RecentCount)
                 App.Settings.RecentFiles.RemoveAt(App.RecentCount);
         }
+
+        // 加载视频摘要
+        TaskHelp.Run(() => ReloadSummarySidebarAsync());
+    }
+
+    /// <summary>
+    /// 重新加载摘要侧边栏
+    /// </summary>
+    async System.Threading.Tasks.Task ReloadSummarySidebarAsync()
+    {
+        try
+        {
+            _summaryCts?.Cancel();
+            _summaryCts = new System.Threading.CancellationTokenSource();
+
+            string path = Player.GetPropertyString("path");
+            string summaryHost = App.SummaryHost;
+
+            var viewModel = await _summaryController.LoadAsync(path, summaryHost, _summaryCts.Token);
+
+            if (_summaryCts.IsCancellationRequested)
+                return;
+
+            // 确保在 UI 线程上更新控件
+            BeginInvoke(() => RenderSummarySidebar(viewModel));
+        }
+        catch (System.OperationCanceledException)
+        {
+        }
+        catch (System.Exception ex)
+        {
+            Terminal.WriteError($"[Summary] Failed to load summary: {ex.Message}");
+            Terminal.WriteError($"[Summary] Stack trace: {ex.StackTrace}");
+        }
+    }
+
+    /// <summary>
+    /// 渲染摘要侧边栏
+    /// </summary>
+    void RenderSummarySidebar(VideoSummaryViewModel viewModel)
+    {
+        if (!viewModel.ShouldShowSidebar)
+        {
+            if (_summaryPopup is { IsDisposed: false })
+                _summaryPopup.Hide();
+            return;
+        }
+
+        EnsureSummaryPopup();
+        if (_summaryPopup == null || _summaryContentPanel == null)
+            return;
+
+        _summaryPopup.SuspendLayout();
+        _summaryContentPanel.SuspendLayout();
+        _summaryContentPanel.Controls.Clear();
+
+        int yOffset = 0;
+
+        // 渲染每个摘要部分
+        foreach (var section in viewModel.Sections)
+        {
+            yOffset = CreateSummarySection(section, _summaryContentPanel, yOffset);
+        }
+
+        _summaryContentPanel.Height = yOffset;
+        _summaryContentPanel.ResumeLayout();
+        _summaryPopup.ResumeLayout();
+        UpdateSummaryPopupBounds();
+
+        if (!_summaryPopup.Visible)
+            _summaryPopup.Show(this);
+        else
+            _summaryPopup.Invalidate();
+    }
+
+    void EnsureSummaryPopup()
+    {
+        if (_summaryPopup is { IsDisposed: false } && _summaryScrollPanel != null && _summaryContentPanel != null)
+            return;
+
+        _summaryPopup = new System.Windows.Forms.Form
+        {
+            Text = "视频摘要",
+            Size = new System.Drawing.Size(450, 600),
+            StartPosition = System.Windows.Forms.FormStartPosition.Manual,
+            BackColor = System.Drawing.Color.FromArgb(24, 24, 24),
+            ForeColor = System.Drawing.Color.White,
+            FormBorderStyle = System.Windows.Forms.FormBorderStyle.Sizable,
+            ShowInTaskbar = false
+        };
+        _summaryPopup.FormClosed += (_, _) =>
+        {
+            _summaryPopup = null;
+            _summaryScrollPanel = null;
+            _summaryContentPanel = null;
+        };
+
+        _summaryScrollPanel = new System.Windows.Forms.Panel
+        {
+            Dock = System.Windows.Forms.DockStyle.Fill,
+            AutoScroll = true,
+            BackColor = System.Drawing.Color.FromArgb(24, 24, 24),
+            Padding = new System.Windows.Forms.Padding(12)
+        };
+        _summaryScrollPanel.MouseWheel += SummaryChild_MouseWheel;
+
+        _summaryContentPanel = new System.Windows.Forms.Panel
+        {
+            Dock = System.Windows.Forms.DockStyle.Top,
+            AutoSize = true,
+            BackColor = System.Drawing.Color.FromArgb(24, 24, 24),
+            Width = 400
+        };
+        _summaryContentPanel.MouseWheel += SummaryChild_MouseWheel;
+
+        _summaryScrollPanel.Controls.Add(_summaryContentPanel);
+        _summaryPopup.Controls.Add(_summaryScrollPanel);
+    }
+
+    void UpdateSummaryPopupBounds()
+    {
+        if (_summaryPopup == null || _summaryPopup.IsDisposed)
+            return;
+
+        _summaryPopup.Location = new System.Drawing.Point(
+            this.Location.X + this.Width - 470,
+            this.Location.Y + 50);
+    }
+
+    /// <summary>
+    /// 创建摘要部分
+    /// </summary>
+    int CreateSummarySection(VideoSummarySectionViewModel section, System.Windows.Forms.Panel parent, int yOffset)
+    {
+        // 每个小节一个面板
+        var sectionPanel = new System.Windows.Forms.Panel
+        {
+            Location = new System.Drawing.Point(0, yOffset),
+            Width = parent.Width,
+            AutoSize = true,
+            BackColor = System.Drawing.Color.FromArgb(24, 24, 24)
+        };
+        sectionPanel.MouseWheel += SummaryChild_MouseWheel;
+
+        int sectionY = 0;
+
+        foreach (var block in section.Blocks)
+        {
+            var control = CreateBlockControl(block, sectionPanel.Width - 24);
+            if (control != null)
+            {
+                control.Location = new System.Drawing.Point(0, sectionY);
+                control.MouseWheel += SummaryChild_MouseWheel;
+                sectionPanel.Controls.Add(control);
+                sectionY += control.Height + 8;
+            }
+        }
+
+        sectionPanel.Height = sectionY;
+        parent.Controls.Add(sectionPanel);
+
+        return yOffset + sectionY + 16; // 小节间距
+    }
+
+    /// <summary>
+    /// 创建块控件
+    /// </summary>
+    System.Windows.Forms.Control? CreateBlockControl(SummaryBlock block, int width)
+    {
+        switch (block)
+        {
+            case SummaryHeadingBlock heading:
+                return CreateRichTextBlock(
+                    heading.Inlines,
+                    width,
+                    new System.Drawing.Font("Segoe UI", heading.Level == 1 ? 14 : 12, System.Drawing.FontStyle.Bold),
+                    System.Drawing.Color.White);
+
+            case SummaryParagraphBlock paragraph:
+                return CreateRichTextBlock(
+                    paragraph.Inlines,
+                    width,
+                    new System.Drawing.Font("Segoe UI", 10),
+                    System.Drawing.Color.White);
+
+            case SummaryCodeBlock code:
+                var codeLabel = new System.Windows.Forms.Label
+                {
+                    Text = code.Text,
+                    ForeColor = System.Drawing.Color.LightGray,
+                    BackColor = System.Drawing.Color.FromArgb(40, 40, 40),
+                    Font = new System.Drawing.Font("Consolas", 9),
+                    AutoSize = true,
+                    MaximumSize = new System.Drawing.Size(width, 0),
+                    Padding = new System.Windows.Forms.Padding(8)
+                };
+                return codeLabel;
+
+            case SummaryListBlock list:
+                var listPanel = new System.Windows.Forms.Panel
+                {
+                    Width = width,
+                    AutoSize = true,
+                    BackColor = System.Drawing.Color.FromArgb(24, 24, 24)
+                };
+                listPanel.MouseWheel += SummaryChild_MouseWheel;
+
+                int itemY = 0;
+                foreach (var item in list.Items)
+                {
+                    var itemControl = CreateRichTextBlock(
+                        item,
+                        width,
+                        new System.Drawing.Font("Segoe UI", 10),
+                        System.Drawing.Color.White,
+                        prefix: "• ");
+                    itemControl.Location = new System.Drawing.Point(0, itemY);
+                    itemControl.MouseWheel += SummaryChild_MouseWheel;
+                    listPanel.Controls.Add(itemControl);
+                    itemY += itemControl.Height + 4;
+                }
+
+                listPanel.Height = itemY;
+                return listPanel;
+
+            default:
+                return null;
+        }
+    }
+
+    /// <summary>
+    /// 创建文本块
+    /// </summary>
+    System.Windows.Forms.Control CreateRichTextBlock(
+        IReadOnlyList<SummaryInline> inlines,
+        int width,
+        System.Drawing.Font font,
+        System.Drawing.Color foreColor,
+        string? prefix = null)
+    {
+        using var timestampFont = new System.Drawing.Font(font, font.Style | System.Drawing.FontStyle.Underline);
+        using var linkFont = new System.Drawing.Font(font, font.Style | System.Drawing.FontStyle.Underline);
+        using var boldFont = new System.Drawing.Font(font, font.Style | System.Drawing.FontStyle.Bold);
+        using var boldTimestampFont = new System.Drawing.Font(font, font.Style | System.Drawing.FontStyle.Bold | System.Drawing.FontStyle.Underline);
+
+        var rtb = new System.Windows.Forms.RichTextBox
+        {
+            Width = width,
+            ReadOnly = true,
+            BorderStyle = System.Windows.Forms.BorderStyle.None,
+            BackColor = System.Drawing.Color.FromArgb(24, 24, 24),
+            ForeColor = foreColor,
+            Font = font,
+            ScrollBars = System.Windows.Forms.RichTextBoxScrollBars.None,
+            WordWrap = true,
+            Multiline = true,
+            ShortcutsEnabled = true,
+            DetectUrls = false,
+            Cursor = System.Windows.Forms.Cursors.IBeam,
+            TabStop = false
+        };
+
+        var timestampMarkers = new List<SummaryTimestampMarker>();
+        rtb.SuspendLayout();
+        rtb.Clear();
+        rtb.SelectionFont = font;
+        rtb.SelectionColor = foreColor;
+
+        if (!string.IsNullOrEmpty(prefix))
+            rtb.AppendText(prefix);
+
+        foreach (var inline in inlines)
+        {
+            switch (inline)
+            {
+                case SummaryTextInline text:
+                    rtb.SelectionColor = foreColor;
+                    rtb.SelectionFont = text.IsBold ? boldFont : font;
+                    rtb.AppendText(text.Text);
+                    break;
+                case SummaryTimestampInline timestamp:
+                    var start = rtb.TextLength;
+                    rtb.SelectionColor = System.Drawing.Color.LightSkyBlue;
+                    rtb.SelectionFont = timestamp.IsBold ? boldTimestampFont : timestampFont;
+                    rtb.AppendText(timestamp.Text);
+                    timestampMarkers.Add(new SummaryTimestampMarker(start, timestamp.Text.Length, timestamp.Seconds));
+                    break;
+                case SummaryLinkInline link:
+                    rtb.SelectionColor = System.Drawing.Color.LightSkyBlue;
+                    rtb.SelectionFont = linkFont;
+                    rtb.AppendText(link.Text);
+                    break;
+            }
+        }
+
+        rtb.Select(0, 0);
+        rtb.Height = System.Math.Max(rtb.GetPositionFromCharIndex(System.Math.Max(rtb.TextLength - 1, 0)).Y + font.Height + 10, font.Height + 10);
+        rtb.Tag = BuildTimestampRanges(rtb, timestampMarkers, font.Height);
+        rtb.MouseMove += SummaryTextBox_MouseMove;
+        rtb.MouseClick += SummaryTextBox_MouseClick;
+        rtb.MouseLeave += SummaryTextBox_MouseLeave;
+        rtb.MouseWheel += SummaryChild_MouseWheel;
+        rtb.ResumeLayout();
+
+        return rtb;
+    }
+
+    static List<SummaryTimestampRange> BuildTimestampRanges(
+        System.Windows.Forms.RichTextBox rtb,
+        List<SummaryTimestampMarker> markers,
+        int lineHeight)
+    {
+        var ranges = new List<SummaryTimestampRange>(markers.Count);
+
+        foreach (var marker in markers)
+        {
+            var startPos = rtb.GetPositionFromCharIndex(marker.Start);
+            var endIndex = System.Math.Max(marker.Start + marker.Length - 1, marker.Start);
+            var endPos = rtb.GetPositionFromCharIndex(endIndex);
+            var width = System.Math.Max(endPos.X - startPos.X + 12, 16);
+            var height = System.Math.Max(lineHeight + 4, 16);
+            var bounds = new System.Drawing.Rectangle(startPos.X, startPos.Y - 2, width, height);
+            ranges.Add(new SummaryTimestampRange(marker.Start, marker.Length, marker.Seconds, bounds));
+        }
+
+        return ranges;
+    }
+
+    void SummaryChild_MouseWheel(object? sender, MouseEventArgs e)
+    {
+        if (_summaryScrollPanel == null || _summaryScrollPanel.IsDisposed)
+            return;
+
+        var currentY = -_summaryScrollPanel.AutoScrollPosition.Y;
+        var nextY = System.Math.Max(0, currentY - e.Delta);
+        _summaryScrollPanel.AutoScrollPosition = new System.Drawing.Point(0, nextY);
+    }
+
+    void SummaryTextBox_MouseMove(object? sender, MouseEventArgs e)
+    {
+        if (sender is not System.Windows.Forms.RichTextBox rtb)
+            return;
+
+        var hasTimestamp = TryGetTimestampSeconds(rtb, e.Location, out var _seconds);
+        var targetCursor = hasTimestamp
+            ? System.Windows.Forms.Cursors.Hand
+            : System.Windows.Forms.Cursors.IBeam;
+
+        if (rtb.Cursor != targetCursor)
+            rtb.Cursor = targetCursor;
+    }
+
+    void SummaryTextBox_MouseClick(object? sender, MouseEventArgs e)
+    {
+        if (sender is not System.Windows.Forms.RichTextBox rtb)
+            return;
+
+        if (TryGetTimestampSeconds(rtb, e.Location, out var seconds))
+        {
+            Terminal.WriteError($"[Summary] Timestamp clicked: {seconds}s");
+            SeekToTimestamp(seconds);
+        }
+    }
+
+    void SummaryTextBox_MouseLeave(object? sender, EventArgs e)
+    {
+        if (sender is System.Windows.Forms.RichTextBox rtb && rtb.Cursor != System.Windows.Forms.Cursors.IBeam)
+            rtb.Cursor = System.Windows.Forms.Cursors.IBeam;
+    }
+
+    bool TryGetTimestampSeconds(System.Windows.Forms.RichTextBox rtb, System.Drawing.Point location, out int seconds)
+    {
+        seconds = 0;
+
+        if (rtb.Tag is not List<SummaryTimestampRange> ranges)
+            return false;
+
+        foreach (var range in ranges)
+        {
+            if (range.Bounds.Contains(location))
+            {
+                seconds = range.Seconds;
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    /// <summary>
+    /// 创建行内控件（已废弃，使用 CreateTextBlock 替代）
+    /// </summary>
+    System.Windows.Forms.Control? CreateInlineControl(SummaryInline inline)
+    {
+        switch (inline)
+        {
+            case SummaryTextInline text:
+                return new System.Windows.Forms.Label
+                {
+                    Text = text.Text,
+                    ForeColor = System.Drawing.Color.White,
+                    AutoSize = true,
+                    BackColor = System.Drawing.Color.FromArgb(24, 24, 24),
+                    Margin = System.Windows.Forms.Padding.Empty
+                };
+
+            case SummaryTimestampInline timestamp:
+                // 使用 Label 显示时间戳，点击通过父容器处理
+                return new System.Windows.Forms.Label
+                {
+                    Text = timestamp.Text,
+                    ForeColor = System.Drawing.Color.LightBlue,
+                    AutoSize = true,
+                    BackColor = System.Drawing.Color.FromArgb(24, 24, 24),
+                    Cursor = System.Windows.Forms.Cursors.Hand,
+                    Margin = System.Windows.Forms.Padding.Empty
+                };
+
+            case SummaryLinkInline link:
+                return new System.Windows.Forms.LinkLabel
+                {
+                    Text = link.Text,
+                    LinkColor = System.Drawing.Color.LightBlue,
+                    AutoSize = true,
+                    BackColor = System.Drawing.Color.FromArgb(24, 24, 24),
+                    Margin = System.Windows.Forms.Padding.Empty
+                };
+
+            default:
+                return null;
+        }
+    }
+
+    /// <summary>
+    /// 跳转到指定时间戳
+    /// </summary>
+    void SeekToTimestamp(int seconds)
+    {
+        var command = VideoSummaryViewModel.BuildSeekCommand(seconds);
+        Player.Command(command);
     }
 
     void SetTitle() => BeginInvoke(SetTitleInternal);
@@ -1398,6 +1852,7 @@ public partial class MainForm : Form
     {
         base.OnResize(e);
         SaveWindowProperties();
+        UpdateSummaryPopupBounds();
         
         if (FormBorderStyle != FormBorderStyle.None)
         {
@@ -1460,6 +1915,7 @@ public partial class MainForm : Form
     {
         base.OnMove(e);
         SaveWindowProperties();
+        UpdateSummaryPopupBounds();
     }
 
     protected override void OnDragEnter(DragEventArgs e)

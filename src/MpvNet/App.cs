@@ -1,4 +1,4 @@
-﻿
+
 using CommunityToolkit.Mvvm.Messaging;
 
 using MpvNet.Extensions;
@@ -20,6 +20,7 @@ public class AppClass
     public string Language { get; set; } = "system";
     public string CommandLine { get; set; } = Environment.CommandLine;
     public string MenuSyntax { get; set; } = "#menu:";
+    public string SummaryHost { get; set; } = "pan2.871015.xyz";
 
     public bool AutoLoadFolder { get; set; }
     public bool DebugMode { get; set; }
@@ -150,6 +151,7 @@ public class AppClass
             case "remember-volume": RememberVolume = value == "yes"; return true;
             case "remember-window-position": RememberWindowPosition = value == "yes"; return true;
             case "start-size": StartSize = value; return true;
+            case "summary-host": SummaryHost = value.Trim('\'', '"'); return true;
 
             default:
                 if (writeError)
