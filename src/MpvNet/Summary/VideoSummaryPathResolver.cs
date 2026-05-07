@@ -22,13 +22,16 @@ public static class VideoSummaryPathResolver
             return [];
 
         var uri = new Uri(mediaPath!, UriKind.Absolute);
-        var extension = Path.GetExtension(uri.AbsolutePath);
+        
+        // 移除末尾的斜杠，处理 ...mp4/ 这种情况
+        var absolutePath = uri.AbsolutePath.TrimEnd('/');
+        var extension = Path.GetExtension(absolutePath);
 
         if (!VideoExtensions.Contains(extension))
             return [];
 
-        var fileName = Path.GetFileNameWithoutExtension(uri.AbsolutePath);
-        var directory = uri.AbsolutePath[..uri.AbsolutePath.LastIndexOf('/')];
+        var fileName = Path.GetFileNameWithoutExtension(absolutePath);
+        var directory = absolutePath[..absolutePath.LastIndexOf('/')];
 
         return
         [

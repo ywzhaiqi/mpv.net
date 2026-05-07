@@ -1,0 +1,39 @@
+# https://taskfile.dev
+
+version: '3'
+
+vars:
+  SRC_DIR: src
+  MAIN_PROJECT: MpvNet.Windows/MpvNet.Windows.csproj
+  TEST_PROJECT: MpvNet.Tests/MpvNet.Tests.csproj
+
+tasks:
+  build:
+    desc: 构建项目 (Debug)
+    dir: "{{.SRC_DIR}}"
+    cmds:
+      - dotnet build {{.MAIN_PROJECT}}
+
+  release:
+    desc: 构建项目 (Release)
+    dir: "{{.SRC_DIR}}"
+    cmds:
+      - dotnet build {{.MAIN_PROJECT}} -c Release
+
+  test:
+    desc: 运行测试
+    dir: "{{.SRC_DIR}}"
+    cmds:
+      - dotnet test {{.TEST_PROJECT}}
+
+  clean:
+    desc: 清理构建输出
+    dir: "{{.SRC_DIR}}"
+    cmds:
+      - dotnet clean
+
+  publish:
+    desc: 发布 Release 版本
+    dir: "{{.SRC_DIR}}"
+    cmds:
+      - dotnet publish {{.MAIN_PROJECT}} -c Release -o ../publish

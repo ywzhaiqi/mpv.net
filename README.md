@@ -8,6 +8,17 @@
 
 mpv.net is a media player for Windows with a modern GUI.
 
+---
+
+### 我的修改
+
+本分支基于 [stax76/mpv.net](https://github.com/stax76/mpv.net) 进行以下定制开发：
+
+- **视频摘要侧边栏**：自动从配置的服务器加载视频 Markdown 摘要，支持点击时间戳跳转
+- **Taskfile**：添加 `task release`、`task build`、`task test` 等快捷命令
+
+---
+
 The player is based on the popular [mpv](https://mpv.io) media player.
 mpv.net is designed to be mpv compatible, almost all mpv features are available,
 this means the official [mpv manual](https://mpv.io/manual/master/) applies to mpv.net,
